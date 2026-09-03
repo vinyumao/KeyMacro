@@ -297,6 +297,8 @@ namespace KeyMacro
             if (result != MessageBoxResult.Yes) return;
 
             int removedIndex = App.Config.Macros.IndexOf(macro);
+            // 删除前停止该宏可能正在进行的循环
+            App.Manager?.StopLoop(macro);
             App.Config.Macros.Remove(macro);
             _currentMacro = null;
 
@@ -326,6 +328,8 @@ namespace KeyMacro
                 MacroNameBox.Text = "";
                 TriggerKeyText.Text = "未设置";
                 MacroEnabledCheck.IsChecked = false;
+                LoopEnabledCheck.IsChecked = false;
+                LoopIntervalInput.Text = "500";
                 StepList.ItemsSource = null;
                 return;
             }
@@ -339,6 +343,8 @@ namespace KeyMacro
             ModShift.IsChecked = m.TriggerModifiers.Contains("Shift");
             ModAlt.IsChecked = m.TriggerModifiers.Contains("Alt");
             ModWin.IsChecked = m.TriggerModifiers.Contains("Win");
+            LoopEnabledCheck.IsChecked = m.LoopEnabled;
+            LoopIntervalInput.Text = m.LoopIntervalMs.ToString();
             StepList.ItemsSource = m.Steps;
             _loading = false;
         }
@@ -356,6 +362,27 @@ namespace KeyMacro
             if (_loading || _currentMacro == null) return;
             _currentMacro.Enabled = MacroEnabledCheck.IsChecked == true;
             MacroEnabledLabel.Text = _currentMacro.Enabled ? "已启用" : "已禁用";
+            // 禁用宏时立即停止其循环
+            if (!_currentMacro.Enabled)
+                App.Manager?.StopLoop(_currentMacro);
+            RefreshMacroListItem(_currentMacro);
+        }
+
+        private void LoopEnabledCheck_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_loading || _currentMacro == null) return;
+            _currentMacro.LoopEnabled = LoopEnabledCheck.IsChecked == true;
+            // 关闭循环模式时立即停止当前循环
+            if (!_currentMacro.LoopEnabled)
+                App.Manager?.StopLoop(_currentMacro);
+            RefreshMacroListItem(_currentMacro);
+        }
+
+        private void LoopIntervalInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_loading || _currentMacro == null) return;
+            _currentMacro.LoopIntervalMs = Math.Max(1, ParseDelay(LoopIntervalInput.Text));
+            LoopIntervalInput.Text = _currentMacro.LoopIntervalMs.ToString();
             RefreshMacroListItem(_currentMacro);
         }
 

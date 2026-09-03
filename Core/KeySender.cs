@@ -60,6 +60,15 @@ namespace KeyMacro.Core
         private const uint KEYEVENTF_UNICODE = 0x0004;
         private const uint KEYEVENTF_SCANCODE = 0x0008;
 
+        /// <summary>
+        /// 本程序注入(合成)按键时写入 KEYBDINPUT.dwExtraInfo 的标记值。
+        /// 低级键盘钩子的 KBDLLHOOKSTRUCT.dwExtraInfo 会原样透传该值,
+        /// 钩子据此精确识别"自己合成的按键",从而:
+        /// - 不吞、不触发(避免动作键与触发键相同时导致再次触发触发键);
+        /// - 不参与触发键"按住/抬起"状态(避免动作键打断触发键功能)。
+        /// </summary>
+        public const long SyntheticExtraInfo = 0x4B4D4D32; // "KMM2"
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
@@ -93,7 +102,7 @@ namespace KeyMacro.Core
                         wScan = scan,
                         dwFlags = flags,
                         time = 0,
-                        dwExtraInfo = IntPtr.Zero
+                        dwExtraInfo = new IntPtr(SyntheticExtraInfo)
                     }
                 }
             };
@@ -133,7 +142,7 @@ namespace KeyMacro.Core
                         wVk = 0,
                         wScan = c,
                         dwFlags = KEYEVENTF_UNICODE,
-                        dwExtraInfo = IntPtr.Zero
+                        dwExtraInfo = new IntPtr(SyntheticExtraInfo)
                     }
                 }
             };
@@ -147,7 +156,7 @@ namespace KeyMacro.Core
                         wVk = 0,
                         wScan = c,
                         dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                        dwExtraInfo = IntPtr.Zero
+                        dwExtraInfo = new IntPtr(SyntheticExtraInfo)
                     }
                 }
             };

@@ -44,8 +44,9 @@ namespace KeyMacro.Core
         /// <summary>按键事件:参数为虚拟键码与是否按下(按下=true)。</summary>
         public event Action<int, bool>? KeyEvent;
 
-        /// <summary>是否应吞掉(阻止)该按键:返回 true 表示吞掉。参数:虚拟键码、是否按下。</summary>
-        public Func<int, bool, bool>? ShouldSuppress;
+        /// <summary>是否应吞掉(阻止)该按键:返回 true 表示吞掉。
+        /// 参数:虚拟键码、是否按下、dwExtraInfo(用于识别本程序合成的按键)。</summary>
+        public Func<int, bool, long, bool>? ShouldSuppress;
 
         public bool IsInstalled => _hookId != IntPtr.Zero;
 
@@ -103,7 +104,8 @@ namespace KeyMacro.Core
                     // 先判定是否吞键,再上报事件:
                     // - 吞键时(宏触发/开关)不再上报,避免"已按下集合"污染触发判定
                     // - 未吞键(如录制捕获)则照常上报
-                    bool suppress = ShouldSuppress?.Invoke(vk, isDown) ?? false;
+                    // - dwExtraInfo 用于识别本程序合成的按键(不吞、不上报,防止自触发)
+                    bool suppress = ShouldSuppress?.Invoke(vk, isDown, data.dwExtraInfo.ToInt64()) ?? false;
                     if (suppress)
                     {
                         Log($"  -> SUPPRESSED vk={vk} down={isDown}");

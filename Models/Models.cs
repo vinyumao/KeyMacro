@@ -129,13 +129,17 @@ namespace KeyMacro.Models
         private string _triggerKey = "";
         private List<string> _triggerModifiers = new();
         private bool _enabled = true;
+        private bool _loopEnabled;
+        private int _loopIntervalMs = 500;
+        private bool _isLooping;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private void Notify([CallerMemberName] string? name = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-            if (name is nameof(Name) or nameof(TriggerKey) or nameof(TriggerModifiers) or nameof(Enabled))
+            if (name is nameof(Name) or nameof(TriggerKey) or nameof(TriggerModifiers) or nameof(Enabled)
+                or nameof(LoopEnabled) or nameof(LoopIntervalMs) or nameof(IsLooping))
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ListTitle)));
         }
 
@@ -165,6 +169,30 @@ namespace KeyMacro.Models
             set { if (_enabled != value) { _enabled = value; Notify(); } }
         }
 
+        /// <summary>是否开启循环模式。
+        /// 开启后,触发键按下一次即开始循环执行动作序列,再按一次同一触发键停止。
+        /// 仅当触发键与动作键相同等场景下,动作合成键不会打断/再次触发触发键功能。</summary>
+        public bool LoopEnabled
+        {
+            get => _loopEnabled;
+            set { if (_loopEnabled != value) { _loopEnabled = value; Notify(); } }
+        }
+
+        /// <summary>循环间隔(毫秒):每执行完一遍动作序列后等待该时长再执行下一遍。</summary>
+        public int LoopIntervalMs
+        {
+            get => _loopIntervalMs;
+            set { if (_loopIntervalMs != value) { _loopIntervalMs = value; Notify(); } }
+        }
+
+        /// <summary>当前是否处于循环执行中(仅运行时状态,不参与序列化)。</summary>
+        [JsonIgnore]
+        public bool IsLooping
+        {
+            get => _isLooping;
+            set { if (_isLooping != value) { _isLooping = value; Notify(); } }
+        }
+
         /// <summary>动作步骤,按顺序执行。</summary>
         public ObservableCollection<MacroStep> Steps { get; set; } = new();
 
@@ -176,7 +204,9 @@ namespace KeyMacro.Models
                 var parts = new List<string>(TriggerModifiers);
                 if (!string.IsNullOrEmpty(TriggerKey)) parts.Add(TriggerKey);
                 string hotkey = parts.Count == 0 ? "未设置触发键" : string.Join("+", parts);
-                return (Enabled ? "● " : "○ ") + Name + "  —  " + hotkey;
+                string loopTag = LoopEnabled ? $"  [循环 {LoopIntervalMs}ms]" : "";
+                string loopingTag = IsLooping ? " · 循环中" : "";
+                return (Enabled ? "● " : "○ ") + Name + "  —  " + hotkey + loopTag + loopingTag;
             }
         }
 
@@ -186,6 +216,8 @@ namespace KeyMacro.Models
             TriggerKey = TriggerKey,
             TriggerModifiers = new List<string>(TriggerModifiers),
             Enabled = Enabled,
+            LoopEnabled = LoopEnabled,
+            LoopIntervalMs = LoopIntervalMs,
             Steps = new ObservableCollection<MacroStep>(Steps)
         };
     }

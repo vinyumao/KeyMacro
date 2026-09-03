@@ -176,6 +176,7 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
                                 <DockPanel Grid.Row="0">
@@ -202,6 +203,18 @@
                                             Margin="8,0,0,0" Click="BtnCaptureTrigger_Click"/>
                                     <TextBlock x:Name="CaptureHint" Text="" FontSize="12" Foreground="{StaticResource AccentBrush}" Margin="12,0,0,0"
                                                VerticalAlignment="Center" Visibility="Collapsed"/>
+                                </StackPanel>
+
+                                <!-- 循环模式配置 -->
+                                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0" VerticalAlignment="Center">
+                                    <CheckBox x:Name="LoopEnabledCheck" Content="循环模式" Style="{StaticResource ToggleSwitchStyle}" FontSize="12"
+                                              VerticalAlignment="Center" Checked="LoopEnabledCheck_Changed" Unchecked="LoopEnabledCheck_Changed"/>
+                                    <TextBlock Text="间隔" FontSize="11" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="14,0,6,0"/>
+                                    <TextBox x:Name="LoopIntervalInput" Style="{StaticResource TextBoxStyle}" Width="64" FontSize="12"
+                                             Padding="4,3" TextAlignment="Center" VerticalAlignment="Center" Text="500" MaxLength="5"
+                                             LostFocus="LoopIntervalInput_LostFocus"/>
+                                    <TextBlock Text="ms" FontSize="11" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="3,0,0,0"/>
+                                    <TextBlock Text="按一下触发键开始,再按一下停止" FontSize="11" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="12,0,0,0"/>
                                 </StackPanel>
                             </Grid>
                         </Border>

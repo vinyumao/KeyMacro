@@ -48,6 +48,15 @@ namespace KeyMacro.Services
             public CancellationTokenSource Cts = new();
         }
 
+        // 循环模式:正在循环执行的宏(macro -> 作业)。按触发键切换开关。
+        // 循环任务持有 _execLock 进行每一轮执行,轮隙之间释放,允许其它宏插入。
+        private sealed class ActiveLoop
+        {
+            public Macro Macro = null!;
+            public CancellationTokenSource Cts = new();
+        }
+        private readonly Dictionary<Macro, ActiveLoop> _loops = new();
+
         // 触发去重:同一按键在短时间内只触发一次(钩子与轮询共用,避免双触发)
         private readonly Dictionary<int, long> _lastTrigger = new();
         private const long TriggerDedupMs = 120;
@@ -148,13 +157,15 @@ namespace KeyMacro.Services
         // ================= 钩子通道 =================
 
         /// <summary>钩子回调:决定是否吞掉该键。逻辑快速,不阻塞钩子线程。</summary>
-        private bool ShouldSuppress(int vk, bool isDown)
+        private bool ShouldSuppress(int vk, bool isDown, long extraInfo)
         {
             if (IsCapturing)
                 return false;
 
-            // 本程序宏刚输出的按键(合成键):不吞、不触发,防止自触发
-            if (IsSelfSentRecently(vk))
+            // 本程序通过 SendInput 合成的按键:dwExtraInfo 带标记,可精确识别。
+            // 一律不吞、不触发、不改变"按住触发键"状态 → 动作键与触发键相同时,
+            // 合成键既不会再次触发触发键功能,也不会打断触发键的循环。
+            if (extraInfo == KeySender.SyntheticExtraInfo)
                 return false;
 
             // keyup 无条件清除触发状态(宏执行中也要清除,否则下次触发会被误吞)
@@ -269,13 +280,16 @@ namespace KeyMacro.Services
         private void ToggleEnabled() => SetEnabled(!_config.MacroEnabled);
 
         /// <summary>设置宏全局启用状态(热键/界面按钮/托盘菜单共用)。
-        /// 关闭时清空排队中尚未执行的宏(正在执行的跑完即止)。</summary>
+        /// 关闭时清空排队中尚未执行的宏(正在执行的跑完即止),并停止所有循环。</summary>
         public void SetEnabled(bool enabled)
         {
             bool changed = _config.MacroEnabled != enabled;
             _config.MacroEnabled = enabled;
             if (!enabled)
+            {
                 ClearPendingQueue();
+                StopAllLoops();
+            }
             if (changed)
                 MacroEnabledChanged?.Invoke();
         }
@@ -320,6 +334,14 @@ namespace KeyMacro.Services
 
         private void TriggerMacro(Macro macro)
         {
+            // 循环模式:按触发键切换循环开关(不进入排队,独立运行)
+            if (macro.LoopEnabled && macro.Steps.Count > 0)
+            {
+                ToggleLoop(macro);
+                MacroTriggered?.Invoke();
+                return;
+            }
+
             QueuedMacro job;
             lock (_lock)
             {
@@ -358,30 +380,11 @@ namespace KeyMacro.Services
 
             try
             {
-                foreach (var step in job.Macro.Steps)
-                {
-                    switch (step.Type)
-                    {
-                        case ActionType.Key:
-                            SendKeyStep(step);
-                            break;
-                        case ActionType.Text:
-                            // 文本中可映射为按键的字符(数字/字母等)同样标记为合成键,
-                            // 防止文本回喂触发(如触发键 "1" + 文本 "14567")
-                            foreach (char c in step.Text)
-                            {
-                                int cvk = KeyMap.GetVk(c.ToString());
-                                if (cvk != 0) RecordSelfSent(cvk);
-                            }
-                            KeySender.SendUnicodeText(step.Text);
-                            break;
-                        case ActionType.Delay:
-                            break; // 延时在下方统一处理
-                    }
-                    // 步骤后延时
-                    if (step.DelayMs > 0)
-                        await Task.Delay(Math.Min(step.DelayMs, 60000));
-                }
+                await ExecuteSteps(job.Macro, job.Cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 执行中途被取消(暂停/上限裁剪):静默退出
             }
             catch (Exception ex)
             {
@@ -390,6 +393,163 @@ namespace KeyMacro.Services
             finally
             {
                 _execLock.Release();
+            }
+        }
+
+        /// <summary>顺序执行一个宏的完整动作序列(支持取消)。步骤内的延时同样可被取消。</summary>
+        private async Task ExecuteSteps(Macro macro, CancellationToken ct)
+        {
+            foreach (var step in macro.Steps)
+            {
+                ct.ThrowIfCancellationRequested();
+                switch (step.Type)
+                {
+                    case ActionType.Key:
+                        SendKeyStep(step);
+                        break;
+                    case ActionType.Text:
+                        // 文本中可映射为按键的字符(数字/字母等)同样标记为合成键,
+                        // 防止文本回喂触发(如触发键 "1" + 文本 "14567")
+                        foreach (char c in step.Text)
+                        {
+                            int cvk = KeyMap.GetVk(c.ToString());
+                            if (cvk != 0) RecordSelfSent(cvk);
+                        }
+                        KeySender.SendUnicodeText(step.Text);
+                        break;
+                    case ActionType.Delay:
+                        break; // 延时在下方统一处理
+                }
+                // 步骤后延时
+                if (step.DelayMs > 0)
+                    await Task.Delay(Math.Min(step.DelayMs, 60000), ct);
+            }
+        }
+
+        // ================= 循环模式 =================
+
+        /// <summary>切换指定宏的循环开关:未循环则启动,循环中则停止。</summary>
+        private void ToggleLoop(Macro macro)
+        {
+            lock (_lock)
+            {
+                if (_loops.TryGetValue(macro, out var existing))
+                {
+                    // 已在循环:停止
+                    _loops.Remove(macro);
+                    existing.Macro.IsLooping = false;
+                    existing.Cts.Cancel();
+                    Core.GlobalKeyboardHook.Log($"  LOOP STOP macro={macro.Name}");
+                    return;
+                }
+
+                // 启动。用 Task.Run 让循环任务在后台线程执行,
+                // 避免首轮动作(含 SendInput+Sleep)阻塞钩子线程。
+                var cts = new CancellationTokenSource();
+                var loop = new ActiveLoop { Macro = macro, Cts = cts };
+                _loops[macro] = loop;
+                loop.Macro.IsLooping = true;
+                Core.GlobalKeyboardHook.Log($"  LOOP START macro={macro.Name} interval={macro.LoopIntervalMs}ms");
+                _ = Task.Run(() => RunLoopAsync(loop, cts.Token));
+            }
+        }
+
+        /// <summary>循环执行宏:每轮执行一遍动作序列,完成后等待 LoopIntervalMs 再进入下一轮。
+        /// 轮隙之间释放 _execLock,允许其它宏插入;循环启动/停止由触发键控制。</summary>
+        private async Task RunLoopAsync(ActiveLoop loop, CancellationToken ct)
+        {
+            var macro = loop.Macro;
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        await _execLock.WaitAsync(ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+
+                    try
+                    {
+                        await ExecuteSteps(macro, ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("循环执行失败: " + ex.Message);
+                    }
+                    finally
+                    {
+                        _execLock.Release();
+                    }
+
+                    // 每轮完成后等待间隔,可被取消
+                    if (macro.LoopIntervalMs > 0)
+                    {
+                        try { await Task.Delay(Math.Min(macro.LoopIntervalMs, 60000), ct); }
+                        catch (OperationCanceledException) { break; }
+                    }
+                }
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    if (_loops.TryGetValue(macro, out var cur))
+                    {
+                        // 字典中仍存在该宏:若还是本作业则移除并清标记;
+                        // 若已换成新的循环作业,则不打扰新作业的标记。
+                        if (ReferenceEquals(cur, loop))
+                        {
+                            _loops.Remove(macro);
+                            loop.Macro.IsLooping = false;
+                        }
+                    }
+                    else
+                    {
+                        // 已被外部停止(触发切换/暂停/删除):清运行标记
+                        loop.Macro.IsLooping = false;
+                    }
+                }
+                loop.Cts.Dispose();
+            }
+        }
+
+        /// <summary>停止指定宏的循环(外部调用:宏被禁用/删除时)。</summary>
+        public void StopLoop(Macro macro)
+        {
+            ActiveLoop? loop;
+            lock (_lock)
+            {
+                if (!_loops.TryGetValue(macro, out loop)) return;
+                _loops.Remove(macro);
+            }
+            loop!.Macro.IsLooping = false;
+            loop.Cts.Cancel();
+            Core.GlobalKeyboardHook.Log($"  LOOP STOP (external) macro={macro.Name}");
+        }
+
+        /// <summary>停止所有正在循环的宏(暂停/退出时调用)。</summary>
+        private void StopAllLoops()
+        {
+            List<ActiveLoop> all;
+            lock (_lock)
+            {
+                all = new List<ActiveLoop>(_loops.Values);
+                _loops.Clear();
+            }
+            foreach (var loop in all)
+            {
+                loop.Macro.IsLooping = false;
+                loop.Cts.Cancel();
             }
         }
 
@@ -426,6 +586,7 @@ namespace KeyMacro.Services
             _pollCts?.Cancel();
             _pollCts?.Dispose();
             ClearPendingQueue();
+            StopAllLoops();
             _hook.Dispose();
         }
     }
